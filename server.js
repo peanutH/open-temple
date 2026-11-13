@@ -1,4 +1,5 @@
 const http = require('node:http');
+const { randomInt } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -6,25 +7,37 @@ const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const SESSION_TTL = 45_000;
 const PAGE_SIZE = 48;
+const SEAT_COUNT = 42;
 const sessions = new Map();
 const indexPath = path.join(__dirname, 'index.html');
 
 function pruneSessions() {
   const cutoff = Date.now() - SESSION_TTL;
-  for (const [session, lastSeen] of sessions) {
-    if (lastSeen < cutoff) sessions.delete(session);
+  for (const [session, visitor] of sessions) {
+    if (visitor.lastSeen < cutoff) sessions.delete(session);
   }
+}
+
+function assignSeat() {
+  const occupied = new Set([...sessions.values()].map(visitor => visitor.seat));
+  const available = [];
+  for (let seat = 0; seat < SEAT_COUNT; seat++) {
+    if (seat % 7 !== 6 && !occupied.has(seat)) available.push(seat);
+  }
+  return available.length ? available[randomInt(available.length)] : null;
 }
 
 function presence(page, you = '') {
   pruneSessions();
   const guests = [...sessions.keys()].sort();
+  const positions = Object.fromEntries([...sessions].map(([session, visitor]) => [session, visitor.seat]));
   const pages = Math.max(1, Math.ceil(guests.length / PAGE_SIZE));
   const safePage = Math.min(Math.max(page, 0), pages - 1);
   const start = safePage * PAGE_SIZE;
   return {
     count: guests.length,
     guests: guests.slice(start, start + PAGE_SIZE),
+    positions,
     you: sessions.has(you) ? you : '',
     page: safePage,
     pages
@@ -77,7 +90,10 @@ const server = http.createServer(async (request, response) => {
         return;
       }
       if (body.action === 'leave') sessions.delete(body.session);
-      else if (body.action === 'join') sessions.set(body.session, Date.now());
+      else if (body.action === 'join') {
+        const visitor = sessions.get(body.session);
+        sessions.set(body.session, { lastSeen: Date.now(), seat: visitor?.seat ?? assignSeat() });
+      }
       else {
         sendJson(response, 400, { error: 'Unknown action' });
         return;
